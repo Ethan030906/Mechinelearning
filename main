@@ -1,0 +1,69 @@
+import os
+import torch
+import config
+from data_loader import dataprocess
+from monai.networks.nets import UNETR
+from trainer import train
+
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+device = torch.device(
+    f"cuda:{config.DEVICE_IDX}" if torch.cuda.is_available() else "cpu"
+)
+
+
+npz_files = []
+for folder in (
+    f
+    for f in os.listdir(config.NPZ_PATH)
+    if os.path.isdir(os.path.join(config.NPZ_PATH, f))
+):
+    npz_file = os.path.join(config.NPZ_PATH, folder, f"{folder}.npz")
+    npz_files.append(npz_file)
+train_index = int(len(npz_files) * config.TRAIN_RATIO)
+train_files = npz_files[:train_index]
+val_files = npz_files[train_index:]
+
+
+train_loader, val_loader = dataprocess(npz_files, val_files).process()
+
+
+model = UNETR(
+    in_channels=config.IN_CHANNELS,
+    out_channels=config.OUT_CHANNELS,
+    img_size=config.PATCH_SIZE,
+    feature_size=16,
+    hidden_size=768,
+    mlp_dim=3072,
+    num_heads=12,
+    pos_embed="perceptron",
+    norm_name="instance",
+    res_block=True,
+    dropout_rate=0.0,
+)
+
+model = model.to(device)
+loss_function = torch.nn.L1Loss()
+torch.backends.cudnn.benchmark = True
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
+global_step = config.GLOBAL_STEP
+MSE_val_best = config.MSE_VAL_BEST
+global_step_best = config.GLOBAL_STEP_BEST
+
+while global_step < config.MAX_ITERATIONS:
+    global_step, dice_val_best, global_step_best = train(
+        global_step,
+        train_loader,
+        val_loader,
+        MSE_val_best,
+        global_step_best,
+        model,
+        device,
+        loss_function,
+        optimizer,
+    )
+model.load_state_dict(
+    torch.load(os.path.join(config.MODEL_SAVE_DIR, config.BEST_MODEL_NAME))
+)
+
+print(f"train completed: {MSE_val_best:.4f} " f"at iteration: {global_step_best}")
