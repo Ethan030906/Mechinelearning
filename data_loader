@@ -1,0 +1,78 @@
+import numpy as np
+import config
+from monai.data import (
+    Dataset,
+    DataLoader,
+    CacheDataset,
+)
+
+
+class CustomDataset(Dataset):
+    def __init__(self, npz_files):
+        self.npz_files = npz_files
+
+    def __len__(self):
+        return len(self.npz_files)
+
+    def __getitem__(self, index):
+        npz_data = np.load(self.npz_files[index])
+        image = npz_data["array_MR"]
+        label = npz_data["label"]
+        # Check dimensions
+        required_dim = 3
+        if len(image.shape) < required_dim and len(label.shape) < required_dim:
+            raise ValueError(
+                f"Image or label at index {index} doesn't have at least {required_dim} dimensions."
+            )
+        # Perform any additional preprocessing or transformations on image and label if needed
+        return {"image": image, "label": label}
+
+
+class dataprocess:
+    def __init__(
+        self,
+        npz_files,
+        val_files,
+        train_transforms=config.train_transforms,
+        cache_rate=0.5,
+        train_batch_size=config.TRAIN_BATCH_SIZE,
+        val_batch_size=config.VAL_BATCH_SIZE,
+        num_workers=config.NUM_WORKERS,
+        pin_memory=True,
+    ):
+        self.npz_files = npz_files
+        self.val_files = val_files
+        self.train_transforms = train_transforms
+        self.cache_rate = cache_rate
+        self.train_batch_size = train_batch_size
+        self.val_batch_size = val_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+
+    def process(self):
+        train_dataset = CustomDataset(self.npz_files)
+        val_dataset = CustomDataset(self.val_files)
+        train_ds = CacheDataset(
+            train_dataset,
+            transform=self.train_transforms,
+            num_workers=self.num_workers,
+            cache_rate=self.cache_rate,
+        )
+        val_ds = CacheDataset(
+            val_dataset, num_workers=self.num_workers, cache_rate=self.cache_rate
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=self.train_batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=self.val_batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+        return train_loader, val_loader
