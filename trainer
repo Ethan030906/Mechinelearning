@@ -1,0 +1,98 @@
+import os
+import torch
+from tqdm import tqdm
+from monai.inferers import sliding_window_inference
+
+import config
+
+epoch_loss_values = []
+metric_values = []
+
+
+def validation(epoch_iterator_val, model, device, loss_function):
+    model.eval()
+    total_loss = 0
+    num_batches = 0
+    with torch.no_grad():
+        for batch in epoch_iterator_val:
+            val_inp = batch["image"]
+            val_lbl = batch["label"]
+            val_inputs, val_labels = (val_inp.to(device), val_lbl.to(device))
+            val_outputs = sliding_window_inference(val_inputs, (16, 128, 128), 2, model)
+            loss = loss_function(val_outputs, val_labels)
+            total_loss += loss.item()  # Add current loss to total_loss
+            num_batches += 1  # Increase num_batches
+            epoch_iterator_val.set_description(
+                "Validate (%d / %d Steps)" % (num_batches, 10.0)
+            )  # I suppose you want to show the number of batches here, not global_step
+    average_loss = (
+        total_loss / num_batches if num_batches > 0 else 0
+    )  # Handle case when num_batches is zero
+    return average_loss
+
+
+def train(
+    global_step,
+    train_loader,
+    val_loader,
+    mse_val_best,
+    global_step_best,
+    model,
+    device,
+    loss_function,
+    optimizer,
+):
+    model.train()
+    epoch_loss = 0
+    step = 0
+    epoch_iterator = tqdm(
+        train_loader, desc="Training (X / X Steps) (loss=X.X)", dynamic_ncols=True
+    )
+    for step, batch in enumerate(epoch_iterator):
+        step += 1
+        x_img = batch["image"]
+        y_img = batch["label"]
+
+        x, y = (x_img.to(device), y_img.to(device))
+
+        logit_map = model(x)
+
+        loss = loss_function(logit_map, y)
+        loss.backward()
+        epoch_loss += loss.item()
+        optimizer.step()
+        optimizer.zero_grad()
+        epoch_iterator.set_description(
+            "Training (%d / %d Steps) (loss=%2.5f)"
+            % (global_step, config.MAX_ITERATIONS, loss)
+        )
+        if (
+            global_step % config.VALIDATION_INTERVAL == 0 and global_step != 0
+        ) or global_step == config.MAX_ITERATIONS:
+            epoch_iterator_val = tqdm(
+                val_loader, desc="Validate (X / X Steps) (dice=X.X)", dynamic_ncols=True
+            )
+            mse_val = validation(epoch_iterator_val, model, device, loss_function)
+            epoch_loss /= step
+            epoch_loss_values.append(epoch_loss)
+            metric_values.append(mse_val)
+            if mse_val < mse_val_best:
+                mse_val_best = mse_val
+                global_step_best = global_step
+                torch.save(
+                    model.state_dict(),
+                    os.path.join(config.MODEL_SAVE_DIR, config.BEST_MODEL_NAME),
+                )
+                print(
+                    "Model Was Saved ! Current Best Avg. MSE: {} Current Avg. MSE: {}".format(
+                        mse_val_best, mse_val
+                    )
+                )
+            else:
+                print(
+                    "Model Was Not Saved ! Current Best Avg. MSE: {} Current Avg. MSE : {}".format(
+                        mse_val_best, mse_val
+                    )
+                )
+        global_step += 1
+    return global_step, mse_val_best, global_step_best
