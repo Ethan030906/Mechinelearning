@@ -1,0 +1,39 @@
+import torch
+from torch import nn
+
+
+class DVHLoss(nn.Module):
+    def __init__(self):
+        super(DVHLoss, self).__init__()
+        self.loss = torch.nn.MSELoss()
+
+    def __call__(self, predicted_dose, target_hist, target_bins, oar):
+        """
+        Calculate DVH loss: averaged over all OARs. Target hist is already computed
+            predicted dose (tensor) -- [N, C, D, H, W] C = 1
+            target hist (tensor)    -- [N, n_bins, n_oars]
+            target bins (tensor)    -- [N, n_bins]
+            oar (tensor)            -- [N, C, D, H, W] C == n_oars one hot encoded OAR including PTV
+        """
+
+        # Calculate predicted hist
+        vols = torch.sum(oar, axis=(2, 3, 4))
+        n_bins = target_bins.shape[1]
+        hist = torch.zeros_like(target_hist)
+        bin_w = target_bins[0, 1] - target_bins[0, 0]
+
+        # print(vols.shape, hist.shape)
+
+        for i in range(n_bins):
+            diff = torch.sigmoid((predicted_dose - target_bins[:, i]) / bin_w)
+            # print(diff.shape)
+            # diff = torch.cat(oar.shape[1] * [diff.unsqueeze(axis=1)]) * oar
+            diff = diff.repeat(1, oar.shape[1], 1, 1, 1) * oar
+            num = torch.sum(diff, axis=(2, 3, 4))
+            # print(diff.shape, num.shape)
+            hist[:, i] = num / vols
+
+        # print(hist.detach().cpu().numpy())
+        # print(vols.detach().cpu().numpy())
+
+        return self.loss(hist, target_hist)
